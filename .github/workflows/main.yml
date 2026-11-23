@@ -30,86 +30,104 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK Packages
+      - name: Setup Android SDK Manually
+        shell: bash
         run: |
+          echo "Checking Android SDK..."
+
+          test -d "$ANDROID_HOME"
+
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
             -type f -name sdkmanager -print -quit)
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: SDK Manager not found"
+            echo "ERROR: sdkmanager not found"
             exit 1
           fi
 
-          yes | "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" --licenses || true
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
+          "$SDKMANAGER" --version
+
+      - name: Accept Android Licenses
+        shell: bash
+        run: |
+          yes | "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" \
+            --licenses || true
+
+      - name: Install Android SDK Packages
+        run: |
+          "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" \
+            --install \
             "platform-tools" \
             "platforms;android-34" \
-            "build-tools;34.0.0"
+            "platforms;android-35" \
+            "build-tools;34.0.0" \
+            "build-tools;35.0.0"
 
       - name: Find Android Project
         id: project
         shell: bash
         run: |
-          PROJECT_FILE=$(find . \
-            -type f \
-            -name settings.gradle.kts \
+          SETTINGS=$(find . -type f \
+            \( -name settings.gradle \
+            -o -name settings.gradle.kts \) \
             -not -path './.git/*' \
             -print -quit)
 
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "ERROR: settings.gradle.kts not found"
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: Gradle settings file missing"
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$PROJECT_FILE")
+          PROJECT_DIR=$(dirname "$SETTINGS")
 
-          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "ERROR: app/build.gradle.kts not found"
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: App Gradle file missing"
             exit 1
           fi
 
-          echo "Project found: $PROJECT_DIR"
+          echo "Project directory: $PROJECT_DIR"
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Setup Gradle 8.9
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Verify Build Configuration
+      - name: Verify Gradle
         working-directory: ${{ steps.project.outputs.dir }}
-        run: |
-          echo "Checking LoveRing project..."
-          gradle --version
-          gradle tasks --no-daemon
+        run: gradle --version
 
-      - name: Build Debug APK
+      - name: Build LoveRing Debug APK
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
           gradle --no-daemon assembleDebug
 
-      - name: Verify APK
+      - name: Find APK
+        id: apk
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APK=$(find app/build/outputs/apk/debug \
+            -type f -name '*.apk' -print -quit)
 
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: APK was not generated"
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK not generated"
             exit 1
           fi
 
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
           ls -lh "$APK"
 
       - name: Upload LoveRing APK
         uses: actions/upload-artifact@v4
         with:
           name: LoveRing-APK
-          path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.project.outputs.dir }}/${{ env.APK_PATH }}
           if-no-files-found: error
           retention-days: 7
           
