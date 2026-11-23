@@ -30,44 +30,28 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK Manually
+      - name: Setup Android SDK
         shell: bash
         run: |
-          echo "Checking Android SDK..."
-
-          test -d "$ANDROID_HOME"
-
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
             -type f -name sdkmanager -print -quit)
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found"
+            echo "ERROR: Android SDK Manager missing"
             exit 1
           fi
 
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
-          "$SDKMANAGER" --version
-
-      - name: Accept Android Licenses
-        shell: bash
-        run: |
           yes | "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" \
-            --licenses || true
+            --sdk_root="$ANDROID_HOME" --licenses || true
 
-      - name: Install Android SDK Packages
-        run: |
-          "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" \
-            --install \
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
             "platform-tools" \
             "platforms;android-34" \
-            "platforms;android-35" \
-            "build-tools;34.0.0" \
-            "build-tools;35.0.0"
+            "build-tools;34.0.0"
 
-      - name: Find Android Project
+      - name: Find Or Extract LoveRing Project
         id: project
         shell: bash
         run: |
@@ -75,25 +59,61 @@ jobs:
             \( -name settings.gradle \
             -o -name settings.gradle.kts \) \
             -not -path './.git/*' \
+            -not -path './.github/*' \
             -print -quit)
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERROR: Gradle settings file missing"
+            echo "Gradle project not extracted."
+            echo "Searching ZIP files..."
+
+            FOUND=0
+
+            while IFS= read -r -d '' ZIPFILE; do
+              if unzip -Z1 "$ZIPFILE" | \
+                grep -Eq '(^|/)settings.gradle(\.kts)?$'; then
+
+                echo "Extracting: $ZIPFILE"
+                mkdir -p _lovering_src
+                unzip -q "$ZIPFILE" -d _lovering_src
+                FOUND=1
+                break
+              fi
+            done < <(find . -maxdepth 5 -type f \
+              -iname '*.zip' \
+              -not -path './.git/*' \
+              -print0)
+
+            if [ "$FOUND" -eq 0 ]; then
+              echo "ERROR: No LoveRing ZIP found."
+              echo "Upload lovering-ultimate-project.zip to repository."
+              exit 1
+            fi
+          fi
+
+          SETTINGS=$(find . -type f \
+            \( -name settings.gradle \
+            -o -name settings.gradle.kts \) \
+            -not -path './.git/*' \
+            -not -path './.github/*' \
+            -print -quit)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: Gradle settings file missing after extraction"
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
 
-          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
-             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
             echo "ERROR: App Gradle file missing"
             exit 1
           fi
 
-          echo "Project directory: $PROJECT_DIR"
+          echo "Project found: $PROJECT_DIR"
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Setup Gradle
+      - name: Setup Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
@@ -102,12 +122,11 @@ jobs:
         working-directory: ${{ steps.project.outputs.dir }}
         run: gradle --version
 
-      - name: Build LoveRing Debug APK
+      - name: Build LoveRing APK
         working-directory: ${{ steps.project.outputs.dir }}
-        run: |
-          gradle --no-daemon assembleDebug
+        run: gradle --no-daemon assembleDebug
 
-      - name: Find APK
+      - name: Find Generated APK
         id: apk
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -120,14 +139,14 @@ jobs:
             exit 1
           fi
 
-          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
-          ls -lh "$APK"
+          echo "APK: $APK"
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
 
       - name: Upload LoveRing APK
         uses: actions/upload-artifact@v4
         with:
           name: LoveRing-APK
-          path: ${{ steps.project.outputs.dir }}/${{ env.APK_PATH }}
+          path: ${{ steps.project.outputs.dir }}/${{ steps.apk.outputs.path }}
           if-no-files-found: error
           retention-days: 7
           
